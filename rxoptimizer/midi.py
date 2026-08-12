@@ -166,3 +166,198 @@ def validate_midi(midi: MidiFile) -> dict:
     return {"note_on":note_on,"note_off":note_off,"unmatched_note_on":unmatched_on,
             "unmatched_note_off":unmatched_off,"invalid_values":invalid_values,
             "valid":invalid_values==0 and unmatched_on==0 and unmatched_off==0}
+
+
+def to_mido_file(midi: MidiFile) -> "mido.MidiFile":
+    """Konvertuj interni MidiFile format u mido.MidiFile za RX/Korg obradu."""
+    import mido
+    
+    mid = mido.MidiFile(ticks_per_beat=midi.division)
+    
+    for track_events in midi.tracks:
+        mido_track = mido.MidiTrack()
+        mid.tracks.append(mido_track)
+        
+        # Sortiraj evente po tick i order
+        sorted_events = sorted(track_events, key=lambda e: (e.tick, e.order))
+        
+        last_tick = 0
+        for event in sorted_events:
+            delta = event.tick - last_tick
+            
+            if event.kind == "note_on":
+                mido_track.append(mido.Message(
+                    'note_on', 
+                    channel=event.channel, 
+                    note=event.data1, 
+                    velocity=event.data2 or 0,
+                    time=delta
+                ))
+            elif event.kind == "note_off":
+                mido_track.append(mido.Message(
+                    'note_off',
+                    channel=event.channel,
+                    note=event.data1,
+                    velocity=event.data2 or 0,
+                    time=delta
+                ))
+            elif event.kind == "control":
+                mido_track.append(mido.Message(
+                    'control_change',
+                    channel=event.channel,
+                    control=event.data1,
+                    value=event.data2 or 0,
+                    time=delta
+                ))
+            elif event.kind == "program":
+                mido_track.append(mido.Message(
+                    'program_change',
+                    channel=event.channel,
+                    program=event.data1 or 0,
+                    time=delta
+                ))
+            elif event.kind == "pitch":
+                mido_track.append(mido.Message(
+                    'pitchwheel',
+                    channel=event.channel,
+                    pitch=((event.data2 or 0) << 7) | (event.data1 or 0),
+                    time=delta
+                ))
+            elif event.kind == "meta":
+                if event.data1 == 0x51:  # Tempo
+                    mido_track.append(mido.MetaMessage(
+                        'set_tempo',
+                        tempo=int.from_bytes(event.raw, 'big'),
+                        time=delta
+                    ))
+                elif event.data1 == 0x58:  # Time signature
+                    if len(event.raw) >= 4:
+                        mido_track.append(mido.MetaMessage(
+                            'time_signature',
+                            numerator=event.raw[0],
+                            denominator=2**event.raw[1],
+                            clocks_per_click=event.raw[2],
+                            notated_32nd_notes_per_beat=event.raw[3],
+                            time=delta
+                        ))
+                elif event.data1 in (1, 3):  # Text
+                    try:
+                        text = event.raw.decode('latin1')
+                        msg_type = 'text' if event.data1 == 1 else 'track_name'
+                        mido_track.append(mido.MetaMessage(
+                            msg_type,
+                            text=text,
+                            time=delta
+                        ))
+                    except:
+                        pass
+            else:
+                # Ostali eventovi - preskoči ili dodaj kao generic
+                if delta > 0:
+                    mido_track.append(mido.Message('marker', time=delta))
+            
+            last_tick = event.tick
+        
+        # Dodaj End of Track
+        mido_track.append(mido.MetaMessage('end_of_track', time=0))
+    
+    return mid
+
+
+def from_mido_file(mid: "mido.MidiFile") -> MidiFile:
+    """Konvertuj mido.MidiFile nazad u interni MidiFile format."""
+    midi = MidiFile(format=mid.type, division=mid.ticks_per_beat)
+    
+    for mido_track in mid.tracks:
+        track_events = []
+        current_tick = 0
+        
+        for msg in mido_track:
+            current_tick += msg.time
+            
+            if msg.type == 'note_on':
+                track_events.append(Event(
+                    tick=current_tick,
+                    order=0,
+                    kind='note_on',
+                    channel=msg.channel,
+                    data1=msg.note,
+                    data2=msg.velocity
+                ))
+            elif msg.type == 'note_off':
+                track_events.append(Event(
+                    tick=current_tick,
+                    order=0,
+                    kind='note_off',
+                    channel=msg.channel,
+                    data1=msg.note,
+                    data2=msg.velocity
+                ))
+            elif msg.type == 'control_change':
+                track_events.append(Event(
+                    tick=current_tick,
+                    order=0,
+                    kind='control',
+                    channel=msg.channel,
+                    data1=msg.control,
+                    data2=msg.value
+                ))
+            elif msg.type == 'program_change':
+                track_events.append(Event(
+                    tick=current_tick,
+                    order=0,
+                    kind='program',
+                    channel=msg.channel,
+                    data1=msg.program
+                ))
+            elif msg.type == 'pitchwheel':
+                pitch = msg.pitch
+                data1 = pitch & 0x7F
+                data2 = (pitch >> 7) & 0x7F
+                track_events.append(Event(
+                    tick=current_tick,
+                    order=0,
+                    kind='pitch',
+                    channel=msg.channel,
+                    data1=data1,
+                    data2=data2
+                ))
+            elif msg.type == 'set_tempo':
+                tempo_bytes = msg.tempo.to_bytes(3, 'big')
+                track_events.append(Event(
+                    tick=current_tick,
+                    order=0,
+                    kind='meta',
+                    data1=0x51,
+                    raw=tempo_bytes
+                ))
+            elif msg.type == 'time_signature':
+                raw = bytes([
+                    msg.numerator,
+                    int(math.log2(msg.denominator)) if msg.denominator > 0 else 2,
+                    msg.clocks_per_click,
+                    msg.notated_32nd_notes_per_beat
+                ])
+                track_events.append(Event(
+                    tick=current_tick,
+                    order=0,
+                    kind='meta',
+                    data1=0x58,
+                    raw=raw
+                ))
+            elif msg.type in ('text', 'track_name'):
+                meta_type = 0x01 if msg.type == 'text' else 0x03
+                track_events.append(Event(
+                    tick=current_tick,
+                    order=0,
+                    kind='meta',
+                    data1=meta_type,
+                    raw=msg.text.encode('latin1')
+                ))
+        
+        midi.tracks.append(track_events)
+    
+    return midi
+    return {"note_on":note_on,"note_off":note_off,"unmatched_note_on":unmatched_on,
+            "unmatched_note_off":unmatched_off,"invalid_values":invalid_values,
+            "valid":invalid_values==0 and unmatched_on==0 and unmatched_off==0}

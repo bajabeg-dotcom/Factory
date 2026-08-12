@@ -13,6 +13,8 @@ from .sound_intelligence import (
 )
 from .instrument_identity import canonical_identity,identities_compatible
 from .instrument_structure import choose_factory_model,choose_identity_model
+from .rx_smart_mapper import RxArticulationInjector, RxConfig, RX_SOUND_MAP
+from .korg_pa800_adapter import KorgPa800Adapter, KORG_BANK_MAP
 
 ROLES = ("melodic","bass","guitar","accompaniment","percussion","drums")
 
@@ -400,6 +402,94 @@ def optimize(midi,gold_stats,mappings,strength=.7,preserve_sysex=False,gold_mode
         for current,nxt in zip(group,group[1:]):
             if current["off_event"].tick>=nxt["start"]:
                 current["off_event"].tick=max(current["start"]+1,nxt["start"]-1); overlap_clamps+=1
+    
+    # --- RX SMART MAPPER INTEGRATION ---
+    # Primjeni RX zvukove i artikulacije automatski
+    rx_stats = {"rx_sounds_injected": 0, "articulations_injected": 0}
+    try:
+        # Konvertuj result (Event-based) u mido.MidiFile za RX mapper
+        from .midi import to_mido_file
+        mid_temp = to_mido_file(result)
+        
+        injector = RxArticulationInjector(config=RxConfig(debug_mode=False))
+        
+        # 1. Inject RX Sounds (Bank Select + Program Change)
+        dna_profiles_for_rx = {}
+        for track_idx, events in enumerate(result.tracks):
+            channel = None
+            for event in events:
+                if hasattr(event, 'channel') and event.channel is not None:
+                    channel = int(event.channel)
+                    break
+            if channel is not None and channel != 9:  # Preskoči bubnjeve
+                dna_profiles_for_rx[track_idx] = {"velocity_mean": 72, "velocity_std": 15}
+        
+        mid_temp.tracks = injector.inject_rx_sounds(mid_temp.tracks, dna_profiles_for_rx)
+        rx_stats["rx_sounds_injected"] = injector.stats["programs_changed"]
+        
+        # 2. Inject Articulations (Keyswitches / CC)
+        dna_analysis_for_art = {}
+        for track_idx, events in enumerate(result.tracks):
+            # Detektuj trilere ili brze alternacije iz DNA analize
+            # Ovo je pojednostavljeno - u produkciji bi išla prava DNA analiza
+            dna_analysis_for_art[track_idx] = []
+        
+        mid_temp.tracks = injector.inject_articulations(mid_temp.tracks, dna_analysis_for_art)
+        rx_stats["articulations_injected"] = injector.stats["articulations_injected"]
+        
+        # Konvertuj nazad u Event format
+        from .midi import from_mido_file
+        result = from_mido_file(mid_temp)
+        
+    except Exception as e:
+        # Ako failuje, nastavi bez RX injection (graceful degradation)
+        rx_stats["error"] = str(e)
+    
+    # --- KORG PA800 ADAPTER INTEGRATION ---
+    # Opcionalno: primjeni Korg specifične komande ako je target_device postavljen
+    korg_stats = {"korg_instruments_mapped": 0, "korg_articulations_added": 0}
+    target_device = None  # Postavi na "KORG_PA800" ako želiš aktivirati
+    if target_device == "KORG_PA800":
+        try:
+            from .midi import to_mido_file, from_mido_file
+            mid_korg = to_mido_file(result)
+            
+            korg_adapter = KorgPa800Adapter(target_device=target_device)
+            
+            # Detektuj instrumente po trackovima
+            instrument_mapping = {}
+            for track_idx, events in enumerate(result.tracks):
+                channel = None
+                program = 0
+                for event in events:
+                    if hasattr(event, 'channel') and event.channel is not None:
+                        channel = int(event.channel)
+                    if event.kind == "program":
+                        program = int(event.data1 or 0)
+                    if channel is not None:
+                        break
+                
+                if channel is not None:
+                    # Pokušaj detektovati instrument iz programa
+                    for gm_prog, korg_name in KORG_BANK_MAP.items():
+                        if isinstance(gm_prog, str):
+                            continue
+                        if gm_prog == program:
+                            instrument_mapping[track_idx] = korg_name
+                            break
+            
+            # Primjeni Korg adaptaciju
+            korg_adapter.apply_to_midi_file(
+                input_path=None,  # Ne treba jer radimo in-memory
+                output_path=None,
+                instrument_mapping=instrument_mapping
+            )
+            # Napomena: apply_to_midi_file radi sa fajlovima, treba modifikovati za in-memory rad
+            # Za sada ovo ostaje kao placeholder za buduću implementaciju
+            
+        except Exception as e:
+            korg_stats["error"] = str(e)
+    
     return result,{"velocity_notes_changed":cv,"duration_notes_changed":cd,"timing_notes_changed":timing_changed,
         "controller_events_changed":controller_changed,"overlap_clamps":overlap_clamps,"program_changes_mapped":mapped,
         "rx_velocity_notes_protected":protected,"sysex_quarantined":sysex_quarantined,"unmapped_profiles":sorted(unmapped),
@@ -426,4 +516,6 @@ def optimize(midi,gold_stats,mappings,strength=.7,preserve_sysex=False,gold_mode
         "midi_headroom":headroom_report,"headroom_velocity_notes_limited":headroom_velocity_limited,
         "factory_velocity_notes_calibrated":factory_velocity_calibrated,
         "final_factory_velocity_ceiling_limited":final_headroom_limited,
-        "rhythm_guitar_repair":guitar_repair_report}
+        "rhythm_guitar_repair":guitar_repair_report,
+        "rx_smart_mapper_stats":rx_stats,
+        "korg_pa800_adapter_stats":korg_stats}
