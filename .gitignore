@@ -1,53 +1,8 @@
 ```
-# Python
-__pycache__/
+# Compiled Python files
 *.pyc
-*.pyo
-*.pyd
-*.py~
-*.py.class
-*.py.class.*
-.Python
-*.so
-*.egg-info/
-.eggs/
-.coverage
-htmlcov/
+__pycache__/
 
-# Database
-*.sqlite3
-*.db
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Temp files
-*.tmp
-*.temp
+# Logs
 *.log
-
-# Environment
-.env
-.env.local
-.env.*
-
-# Coverage
-coverage/
-htmlcov/
-.coverage
-
-# Build artifacts
-build/
-dist/
-*.egg
-*.whl
-pip-wheel-metadata/
-
-# OS
-.DS_Store
-Thumbs.db
-
 ```
