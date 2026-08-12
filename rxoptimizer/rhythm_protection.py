@@ -1083,6 +1083,7 @@ def aggregate_protection_status(per_rule_statuses: Mapping[str, str] | Iterable[
     return "PROTECTION_CONTRACT_INCOMPLETE"
 
 
+
 @dataclass(frozen=True)
 class AuthorizationDecision:
     authorization_status: str

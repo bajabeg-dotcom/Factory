@@ -828,9 +828,9 @@ def test_authorization_destructive_fields_and_capability_are_immutable_constants
         decision.capability = "REPAIR_CAPABLE"
     with pytest.raises(FrozenInstanceError):
         decision.repair_allowed = True
-    with pytest.raises(TypeError, match="init=False"):
+    with pytest.raises(ValueError, match="init=False"):
         replace(decision, capability="REPAIR_CAPABLE")
-    with pytest.raises(TypeError, match="init=False"):
+    with pytest.raises(ValueError, match="init=False"):
         replace(decision, proposal_allowed=True)
 
 
