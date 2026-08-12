@@ -1,26 +1,22 @@
 ```
-# Database files
-*.sqlite3.tmp
-
-# Dependencies
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# Logs and temp files
-*.log
-*.tmp
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Coverage
+*.py~
+*.py.class
+*.py.class.*
+.Python
+*.so
+*.egg-info/
+.eggs/
 .coverage
-coverage/
 htmlcov/
+
+# Database
+*.sqlite3
+*.db
 
 # IDE
 .vscode/
@@ -28,7 +24,30 @@ htmlcov/
 *.swp
 *.swo
 
+# Temp files
+*.tmp
+*.temp
+*.log
+
+# Environment
+.env
+.env.local
+.env.*
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Build artifacts
+build/
+dist/
+*.egg
+*.whl
+pip-wheel-metadata/
+
 # OS
 .DS_Store
 Thumbs.db
+
 ```

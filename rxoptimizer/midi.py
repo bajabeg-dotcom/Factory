@@ -3,6 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import struct
+import math
 
 
 class MidiError(ValueError):
@@ -347,12 +348,17 @@ def from_mido_file(mid: "mido.MidiFile") -> MidiFile:
                 ))
             elif msg.type in ('text', 'track_name'):
                 meta_type = 0x01 if msg.type == 'text' else 0x03
+                                # Handle text meta messages safely
+                if hasattr(msg, 'text') and msg.text:
+                    raw=msg.text.encode('latin1')
+                else:
+                    raw=b''
                 track_events.append(Event(
                     tick=current_tick,
                     order=0,
                     kind='meta',
                     data1=meta_type,
-                    raw=msg.text.encode('latin1')
+                    raw=raw
                 ))
         
         midi.tracks.append(track_events)
