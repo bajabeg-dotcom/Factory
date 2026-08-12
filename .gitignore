@@ -1,34 +1,8 @@
 ```
-# Database files
-*.sqlite3.tmp
-
-# Dependencies
-__pycache__/
+# Compiled Python files
 *.pyc
-*.pyo
-*.pyd
+__pycache__/
 
-# Logs and temp files
+# Logs
 *.log
-*.tmp
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Coverage
-.coverage
-coverage/
-htmlcov/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
 ```
