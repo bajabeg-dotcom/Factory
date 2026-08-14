@@ -1,53 +1,28 @@
 ```
-# Python
+# Compiled Python files
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-*.py~
-*.py.class
-*.py.class.*
-.Python
-*.so
-*.egg-info/
-.eggs/
-.coverage
-htmlcov/
 
-# Database
-*.sqlite3
-*.db
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Temp files
-*.tmp
-*.temp
+# Logs and temp files
 *.log
+*.tmp
 
-# Environment
+# Environment files
 .env
 .env.local
-.env.*
+*.env.*
 
-# Coverage
+# Coverage reports
 coverage/
 htmlcov/
 .coverage
 
-# Build artifacts
-build/
-dist/
-*.egg
-*.whl
-pip-wheel-metadata/
+# MyPy cache
+.mypy_cache/
 
-# OS
-.DS_Store
-Thumbs.db
+# Pytest cache
+.pytest_cache/
 
+# Original rules preserved
+*.log
 ```
