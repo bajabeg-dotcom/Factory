@@ -1,359 +1,247 @@
 """
-Test suite for Korg MIDI Optimizer
-
-Tests cover:
-1. DNA Analyzer functionality
-2. Optimizer rules application
-3. File processing pipeline
-4. Edge cases and error handling
+Tests for Korg MIDI Optimizer.
 """
 
 import pytest
 import os
 import sys
-import tempfile
-import shutil
-import mido
+from pathlib import Path
 
 # Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from src.dna_analyzer import MIDIDNAAnalyzer
-from src.optimizer import KorgMIDIOptimizer, create_dna_profile_from_samples
+# Import with absolute paths since we added src to path
+from dna_analyzer import DNAAnalyzer
+from optimizer import MIDIOptimizer
 
 
-class TestMIDIDNAAnalyzer:
-    """Test the MIDI DNA Analyzer."""
+class TestMIDIOptimizer:
+    """Test suite for MIDIOptimizer class."""
     
     @pytest.fixture
     def analyzer(self):
-        """Create a fresh analyzer instance."""
-        return MIDIDNAAnalyzer()
+        """Create a DNAAnalyzer instance for testing."""
+        return DNAAnalyzer()
+    
+    @pytest.fixture
+    def optimizer(self, analyzer):
+        """Create a MIDIOptimizer instance for testing."""
+        return MIDIOptimizer(dna_analyzer=analyzer)
     
     @pytest.fixture
     def sample_midi_file(self, tmp_path):
-        """Create a sample MIDI file for testing."""
+        """Create a test MIDI file with various events."""
+        import mido
+        
         mid = mido.MidiFile()
-        track = mido.MidiTrack()
+        track1 = mido.MidiTrack()
+        track1.append(mido.MetaMessage('track_name', name='Test VAR1', time=0))
+        track1.append(mido.Message('program_change', program=5, channel=0, time=0))
+        track1.append(mido.Message('note_on', note=60, velocity=64, channel=0, time=0))
+        track1.append(mido.Message('note_off', note=60, velocity=64, channel=0, time=0))
+        # Add duplicate note at same tick (should be removed)
+        track1.append(mido.Message('note_on', note=60, velocity=64, channel=0, time=0))
+        track1.append(mido.Message('note_off', note=60, velocity=64, channel=0, time=0))
+        # Add another note
+        track1.append(mido.Message('note_on', note=64, velocity=72, channel=0, time=480))
+        track1.append(mido.Message('note_off', note=64, velocity=72, channel=0, time=480))
+        # Add control changes - duplicate essential CC
+        track1.append(mido.Message('control_change', control=7, value=100, channel=0, time=0))
+        track1.append(mido.Message('control_change', control=7, value=100, channel=0, time=0))  # Duplicate
+        # Non-essential CCs with same value
+        track1.append(mido.Message('control_change', control=99, value=50, channel=0, time=0))
+        track1.append(mido.Message('control_change', control=99, value=50, channel=0, time=0))  # Duplicate
+        track1.append(mido.MetaMessage('end_of_track', time=0))
+        mid.tracks.append(track1)
         
-        # Add basic messages
-        track.append(mido.MetaMessage('set_tempo', tempo=500000))
-        track.append(mido.MetaMessage('time_signature', numerator=4, denominator=4))
-        track.append(mido.Message('program_change', program=0, channel=0))
-        track.append(mido.Message('note_on', note=60, velocity=64, channel=0, time=0))
-        track.append(mido.Message('note_off', note=60, velocity=64, channel=0, time=480))
-        track.append(mido.MetaMessage('end_of_track', time=0))
-        
-        mid.tracks.append(track)
-        
-        filepath = tmp_path / "test.mid"
-        mid.save(filepath)
-        
-        return str(filepath)
+        midi_path = tmp_path / "test.mid"
+        mid.save(str(midi_path))
+        return str(midi_path)
     
-    def test_analyze_file_basic(self, analyzer, sample_midi_file):
-        """Test basic file analysis."""
-        result = analyzer.analyze_file(sample_midi_file)
-        
-        assert 'filename' in result
-        assert 'type' in result
-        assert 'ticks_per_beat' in result
-        assert 'num_tracks' in result
-        assert 'tracks' in result
-        assert 'global_features' in result
-        
-        assert result['global_features']['tempo_bpm'] == 120.0
-        assert result['global_features']['time_signature'] == (4, 4)
+    def test_optimizer_initialization(self, optimizer):
+        """Test that optimizer initializes correctly."""
+        assert optimizer is not None
+        assert isinstance(optimizer.rules, dict)
+        assert optimizer.rules['remove_duplicate_notes'] == True
+        assert optimizer.rules['preserve_style_markers'] == True
     
-    def test_analyze_file_error_handling(self, analyzer):
-        """Test error handling for invalid files."""
-        result = analyzer.analyze_file('/nonexistent/file.mid')
+    def test_set_rule(self, optimizer):
+        """Test rule modification."""
+        optimizer.set_rule('remove_duplicate_notes', False)
+        assert optimizer.rules['remove_duplicate_notes'] == False
         
-        assert 'error' in result
-        assert 'filepath' in result
-    
-    def test_track_analysis(self, analyzer, sample_midi_file):
-        """Test track-level analysis."""
-        result = analyzer.analyze_file(sample_midi_file)
-        
-        assert len(result['tracks']) > 0
-        track = result['tracks'][0]
-        
-        assert 'index' in track
-        assert 'message_count' in track
-        assert 'message_types' in track
-        assert 'channels' in track
-    
-    def test_rhythm_pattern_extraction(self, analyzer):
-        """Test rhythm pattern extraction."""
-        # Create MIDI with clear rhythm
-        mid = mido.MidiFile()
-        track = mido.MidiTrack()
-        
-        track.append(mido.Message('note_on', note=60, velocity=64, time=0))
-        track.append(mido.Message('note_off', note=60, velocity=64, time=100))
-        track.append(mido.Message('note_on', note=62, velocity=64, time=100))
-        track.append(mido.Message('note_off', note=62, velocity=64, time=100))
-        track.append(mido.Message('note_on', note=64, velocity=64, time=100))
-        track.append(mido.MetaMessage('end_of_track', time=0))
-        
-        mid.tracks.append(track)
-        
-        with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as f:
-            mid.save(f.name)
-            result = analyzer.analyze_file(f.name)
-            os.unlink(f.name)
-        
-        assert len(result['tracks']) > 0
-        # Rhythm pattern should be extracted
-        assert 'rhythm_pattern' in result['tracks'][0]
-
-
-class TestKorgMIDIOptimizer:
-    """Test the Korg MIDI Optimizer."""
-    
-    @pytest.fixture
-    def optimizer(self):
-        """Create a fresh optimizer instance."""
-        return KorgMIDIOptimizer()
-    
-    @pytest.fixture
-    def sample_midi_file(self, tmp_path):
-        """Create a sample MIDI file with redundant events."""
-        mid = mido.MidiFile()
-        track = mido.MidiTrack()
-        
-        # Add multiple tempo changes (redundant)
-        track.append(mido.MetaMessage('set_tempo', tempo=500000))
-        track.append(mido.MetaMessage('set_tempo', tempo=600000))
-        track.append(mido.MetaMessage('set_tempo', tempo=500000))
-        
-        # Add redundant control changes
-        track.append(mido.Message('control_change', control=7, value=100, channel=0))
-        track.append(mido.Message('control_change', control=7, value=100, channel=0))
-        track.append(mido.Message('control_change', control=7, value=100, channel=0))
-        
-        # Add notes
-        track.append(mido.Message('note_on', note=60, velocity=64, channel=0, time=0))
-        track.append(mido.Message('note_off', note=60, velocity=64, channel=0, time=480))
-        track.append(mido.MetaMessage('end_of_track', time=0))
-        
-        mid.tracks.append(track)
-        
-        filepath = tmp_path / "test_input.mid"
-        mid.save(filepath)
-        
-        return str(filepath)
+        with pytest.raises(ValueError):
+            optimizer.set_rule('nonexistent_rule', True)
     
     def test_optimize_file_basic(self, optimizer, sample_midi_file, tmp_path):
         """Test basic file optimization."""
-        output_path = tmp_path / "test_output.mid"
+        output_path = str(tmp_path / "optimized.mid")
+        result = optimizer.optimize_file(sample_midi_file, output_path)
         
-        result = optimizer.optimize_file(sample_midi_file, str(output_path))
-        
-        assert result['success'] is True
+        assert 'error' not in result
+        assert result['saved'] == True
         assert os.path.exists(output_path)
-        assert 'original_stats' in result
-        assert 'optimized_stats' in result
+        assert 'original_events' in result
+        assert 'optimized_events' in result
     
-    def test_redundant_event_removal(self, optimizer, sample_midi_file, tmp_path):
-        """Test removal of redundant events."""
-        output_path = tmp_path / "test_output.mid"
+    def test_duplicate_note_removal(self, optimizer, sample_midi_file, tmp_path):
+        """Test that duplicate notes are removed."""
+        output_path = str(tmp_path / "optimized.mid")
+        result = optimizer.optimize_file(sample_midi_file, output_path)
         
-        result = optimizer.optimize_file(sample_midi_file, str(output_path))
+        # Should have removed at least one duplicate note and one duplicate CC
+        assert result['optimized_events'] < result['original_events']
+        stats = optimizer.get_stats()
+        assert stats['notes_removed'] > 0 or stats['events_removed'] > 0
+    
+    def test_control_change_cleaning(self, optimizer, sample_midi_file):
+        """Test control change cleaning."""
+        optimizer.set_rule('clean_control_changes', True)
+        result = optimizer.optimize_file(sample_midi_file)
         
-        # Load optimized file
-        optimized_mid = mido.MidiFile(str(output_path))
+        # Non-essential duplicate CCs should be removed
+        assert result['optimized_events'] < result['original_events']
+    
+    def test_preserve_essential_control_changes(self, optimizer, sample_midi_file, tmp_path):
+        """Test that essential control changes are preserved."""
+        output_path = str(tmp_path / "optimized.mid")
+        result = optimizer.optimize_file(sample_midi_file, output_path)
         
-        # Count tempo changes
-        tempo_count = 0
+        # Load optimized file and check for volume CC (control 7)
+        import mido
+        optimized_mid = mido.MidiFile(output_path)
+        found_volume_cc = False
+        
         for track in optimized_mid.tracks:
             for msg in track:
-                if msg.type == 'set_tempo':
-                    tempo_count += 1
+                if msg.type == 'control_change' and msg.control == 7:
+                    found_volume_cc = True
+                    break
         
-        # Should have only one tempo change after optimization
-        assert tempo_count == 1
+        assert found_volume_cc, "Essential volume CC should be preserved"
     
-    def test_control_change_cleanup(self, optimizer, sample_midi_file, tmp_path):
-        """Test control change cleanup."""
-        output_path = tmp_path / "test_output.mid"
+    def test_style_marker_preservation(self, optimizer, sample_midi_file, tmp_path):
+        """Test that style markers are preserved."""
+        output_path = str(tmp_path / "optimized.mid")
+        result = optimizer.optimize_file(sample_midi_file, output_path)
         
-        result = optimizer.optimize_file(sample_midi_file, str(output_path))
+        import mido
+        optimized_mid = mido.MidiFile(output_path)
+        found_marker = False
         
-        # Load optimized file
-        optimized_mid = mido.MidiFile(str(output_path))
-        
-        # Count control changes
-        cc_count = 0
         for track in optimized_mid.tracks:
             for msg in track:
-                if msg.type == 'control_change':
-                    cc_count += 1
+                if msg.type == 'track_name' and 'VAR1' in msg.name:
+                    found_marker = True
+                    break
         
-        # Should have fewer CCs after cleanup (removed duplicates)
-        assert cc_count < 3
+        assert found_marker, "Style marker should be preserved"
+    
+    def test_optimize_nonexistent_file(self, optimizer):
+        """Test handling of non-existent files."""
+        result = optimizer.optimize_file('/nonexistent/path/file.mid')
+        
+        assert 'error' in result
+        stats = optimizer.get_stats()
+        assert stats['errors'] == 1
     
     def test_optimize_directory(self, optimizer, tmp_path):
         """Test directory optimization."""
+        import mido
+        
+        # Create test MIDI files
         input_dir = tmp_path / "input"
         output_dir = tmp_path / "output"
         input_dir.mkdir()
         
-        # Create multiple MIDI files
-        for i in range(3):
+        for i in range(2):
             mid = mido.MidiFile()
             track = mido.MidiTrack()
-            track.append(mido.Message('note_on', note=60, velocity=64, time=0))
+            track.append(mido.Message('note_on', note=60+i, velocity=64, channel=0, time=0))
+            track.append(mido.Message('note_off', note=60+i, velocity=64, channel=0, time=480))
             track.append(mido.MetaMessage('end_of_track', time=0))
             mid.tracks.append(track)
-            mid.save(input_dir / f"test_{i}.mid")
+            
+            midi_path = input_dir / f"test_{i}.mid"
+            mid.save(str(midi_path))
         
-        result = optimizer.optimize_directory(str(input_dir), str(output_dir))
+        results = optimizer.optimize_directory(str(input_dir), str(output_dir))
         
-        assert result['files_processed'] == 3
-        assert result['successful'] == 3
-        assert result['failed'] == 0
-        assert os.path.exists(output_dir)
-
-
-class TestIntegration:
-    """Integration tests for the complete pipeline."""
+        assert len(results) == 2
+        for result in results:
+            assert 'error' not in result
+            assert result['saved'] == True
+        
+        # Verify output files exist
+        for i in range(2):
+            output_path = output_dir / f"test_{i}.mid"
+            assert output_path.exists()
     
-    @pytest.fixture
-    def test_environment(self, tmp_path):
-        """Set up a test environment with sample data."""
-        base_dir = tmp_path / "test_env"
-        base_dir.mkdir()
+    def test_stats_tracking(self, optimizer, sample_midi_file, tmp_path):
+        """Test statistics tracking."""
+        optimizer.reset_stats()
+        output_path = str(tmp_path / "optimized.mid")
         
-        gold_dir = base_dir / "gold_dna"
-        gold_dir.mkdir()
+        # Process multiple files
+        optimizer.optimize_file(sample_midi_file, output_path)
+        optimizer.optimize_file(sample_midi_file, output_path)
         
-        factory_dir = base_dir / "factory_styles"
-        factory_dir.mkdir()
+        stats = optimizer.get_stats()
+        assert stats['files_processed'] == 2
+    
+    def test_reset_stats(self, optimizer, sample_midi_file, tmp_path):
+        """Test stats reset."""
+        output_path = str(tmp_path / "optimized.mid")
+        optimizer.optimize_file(sample_midi_file, output_path)
         
-        output_dir = base_dir / "output"
-        output_dir.mkdir()
+        stats_before = optimizer.get_stats()
+        assert stats_before['files_processed'] > 0
         
-        # Create sample Gold DNA file
+        optimizer.reset_stats()
+        stats_after = optimizer.get_stats()
+        assert stats_after['files_processed'] == 0
+        assert stats_after['events_removed'] == 0
+    
+    def test_zero_velocity_note_handling(self, tmp_path):
+        """Test handling of zero-velocity notes."""
+        import mido
+        
+        # Create MIDI with zero-velocity note_on (should be treated as note_off)
         mid = mido.MidiFile()
         track = mido.MidiTrack()
-        track.append(mido.MetaMessage('set_tempo', tempo=500000))
-        track.append(mido.Message('note_on', note=60, velocity=80, channel=0, time=0))
-        track.append(mido.MetaMessage('end_of_track', time=480))
-        mid.tracks.append(track)
-        mid.save(gold_dir / "sample_gold.mid")
-        
-        # Create sample Factory Style file
-        mid2 = mido.MidiFile(ticks_per_beat=192)
-        track2 = mido.MidiTrack()
-        track2.append(mido.MetaMessage('set_tempo', tempo=500000))
-        track2.append(mido.Message('note_on', note=36, velocity=100, channel=9, time=0))
-        track2.append(mido.MetaMessage('end_of_track', time=192))
-        mid2.tracks.append(track2)
-        mid2.save(factory_dir / "sample_factory.mid")
-        
-        return {
-            'base_dir': str(base_dir),
-            'gold_dir': str(gold_dir),
-            'factory_dir': str(factory_dir),
-            'output_dir': str(output_dir)
-        }
-    
-    def test_dna_profile_creation(self, test_environment):
-        """Test DNA profile creation from samples."""
-        profile = create_dna_profile_from_samples(
-            test_environment['gold_dir'],
-            test_environment['factory_dir']
-        )
-        
-        assert 'gold_dna_profile' in profile
-        assert 'factory_style_profile' in profile
-        assert 'combined_rules' in profile
-    
-    def test_full_optimization_pipeline(self, test_environment):
-        """Test complete optimization pipeline."""
-        from src.optimizer import KorgMIDIOptimizer
-        
-        # Create optimizer with DNA profile
-        profile = create_dna_profile_from_samples(
-            test_environment['gold_dir'],
-            test_environment['factory_dir']
-        )
-        
-        optimizer = KorgMIDIOptimizer(dna_profile=profile)
-        
-        # Optimize the Gold DNA sample
-        gold_file = os.path.join(test_environment['gold_dir'], "sample_gold.mid")
-        output_file = os.path.join(test_environment['output_dir'], "optimized.mid")
-        
-        result = optimizer.optimize_file(gold_file, output_file)
-        
-        assert result['success'] is True
-        assert os.path.exists(output_file)
-
-
-class TestEdgeCases:
-    """Test edge cases and error conditions."""
-    
-    def test_empty_midi_file(self):
-        """Test handling of empty MIDI file."""
-        analyzer = MIDIDNAAnalyzer()
-        
-        mid = mido.MidiFile()
-        
-        with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as f:
-            mid.save(f.name)
-            result = analyzer.analyze_file(f.name)
-            os.unlink(f.name)
-        
-        assert result is not None
-        assert 'error' not in result or result.get('num_tracks') == 0
-    
-    def test_corrupted_midi_file(self):
-        """Test handling of corrupted MIDI file."""
-        optimizer = KorgMIDIOptimizer()
-        
-        with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as f:
-            f.write(b"This is not a valid MIDI file")
-            temp_path = f.name
-        
-        try:
-            with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as out:
-                output_path = out.name
-            
-            result = optimizer.optimize_file(temp_path, output_path)
-            
-            assert result['success'] is False
-            assert 'error' in result
-        finally:
-            os.unlink(temp_path)
-            if os.path.exists(output_path):
-                os.unlink(output_path)
-    
-    def test_large_midi_file(self):
-        """Test handling of large MIDI file."""
-        analyzer = MIDIDNAAnalyzer()
-        
-        mid = mido.MidiFile()
-        track = mido.MidiTrack()
-        
-        # Add many notes
-        for i in range(1000):
-            track.append(mido.Message('note_on', note=60 + (i % 12), velocity=64, time=0))
-            track.append(mido.Message('note_off', note=60 + (i % 12), velocity=64, time=10))
-        
+        track.append(mido.Message('note_on', note=60, velocity=0, channel=0, time=0))
         track.append(mido.MetaMessage('end_of_track', time=0))
         mid.tracks.append(track)
         
-        with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as f:
-            mid.save(f.name)
-            result = analyzer.analyze_file(f.name)
-            os.unlink(f.name)
+        midi_path = tmp_path / "zero_vel.mid"
+        mid.save(str(midi_path))
         
-        assert result is not None
-        assert 'tracks' in result
-        assert len(result['tracks']) > 0
+        analyzer = DNAAnalyzer()
+        optimizer = MIDIOptimizer(dna_analyzer=analyzer)
+        optimizer.set_rule('remove_zero_velocity_notes', True)
+        
+        output_path = str(tmp_path / "optimized.mid")
+        result = optimizer.optimize_file(str(midi_path), output_path)
+        
+        assert 'error' not in result
+    
+    def test_program_change_preservation(self, optimizer, sample_midi_file, tmp_path):
+        """Test that program changes are preserved."""
+        output_path = str(tmp_path / "optimized.mid")
+        result = optimizer.optimize_file(sample_midi_file, output_path)
+        
+        import mido
+        optimized_mid = mido.MidiFile(output_path)
+        found_program_change = False
+        
+        for track in optimized_mid.tracks:
+            for msg in track:
+                if msg.type == 'program_change':
+                    found_program_change = True
+                    assert msg.program == 5  # Original program
+                    break
+        
+        assert found_program_change, "Program change should be preserved"
 
 
 if __name__ == '__main__':

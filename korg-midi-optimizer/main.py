@@ -1,167 +1,193 @@
 #!/usr/bin/env python3
 """
-Korg MIDI Optimizer - Main Application
+Korg MIDI Optimizer - Main CLI Application
 
-Optimizes MIDI files based on Factory Styles and Gold DNA patterns.
+Optimizes MIDI files for Korg keyboards using DNA patterns from Factory Styles and Gold styles.
+
+Usage:
+    python main.py analyze <directory>     # Analyze MIDI files
+    python main.py optimize <input_dir> <output_dir>  # Optimize MIDI files
+    python main.py batch <input_dir> <output_dir>     # Full batch processing with analysis
 """
 
-import argparse
-import os
 import sys
-import json
+import os
+import argparse
+from pathlib import Path
 
 # Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
-from dna_analyzer import MIDIDNAAnalyzer
-from optimizer import KorgMIDIOptimizer, create_dna_profile_from_samples
+from dna_analyzer import DNAAnalyzer
+from optimizer import MIDIOptimizer
+
+
+def analyze_directory(directory: str, detailed: bool = False):
+    """Analyze all MIDI files in a directory."""
+    analyzer = DNAAnalyzer()
+    path = Path(directory)
+    
+    print(f"Analyzing MIDI files in {directory}...")
+    print("=" * 60)
+    
+    midi_files = list(path.rglob("*.mid")) + list(path.rglob("*.MID"))
+    print(f"Found {len(midi_files)} MIDI files\n")
+    
+    if not midi_files:
+        print("No MIDI files found!")
+        return
+    
+    results = analyzer.analyze_directory(directory)
+    
+    # Summary statistics
+    total_notes = 0
+    total_tracks = 0
+    total_files = 0
+    style_markers_found = {}
+    instruments_used = {}
+    
+    for result in results:
+        if 'error' in result:
+            print(f"Error analyzing {result.get('path', 'unknown')}: {result['error']}")
+            continue
+            
+        total_files += 1
+        total_notes += result.get('total_notes', 0)
+        total_tracks += result.get('total_tracks', 0)
+        
+        for marker in result.get('style_markers', []):
+            marker_type = marker['type']
+            style_markers_found[marker_type] = style_markers_found.get(marker_type, 0) + 1
+        
+        for instrument in result.get('instruments', {}).values():
+            instruments_used[instrument] = instruments_used.get(instrument, 0) + 1
+    
+    print(f"Files analyzed: {total_files}")
+    print(f"Total tracks: {total_tracks}")
+    print(f"Total notes: {total_notes}")
+    
+    if style_markers_found:
+        print(f"\nStyle Markers Found:")
+        for marker_type, count in sorted(style_markers_found.items()):
+            print(f"  {marker_type}: {count}")
+    
+    if detailed and instruments_used:
+        print(f"\nInstruments Used (top 10):")
+        sorted_instruments = sorted(instruments_used.items(), key=lambda x: x[1], reverse=True)[:10]
+        for instrument, count in sorted_instruments:
+            print(f"  Program {instrument}: {count} tracks")
+    
+    print("\n" + "=" * 60)
+    return results
+
+
+def optimize_directory(input_dir: str, output_dir: str, rules: dict = None):
+    """Optimize all MIDI files in a directory."""
+    analyzer = DNAAnalyzer()
+    optimizer = MIDIOptimizer(dna_analyzer=analyzer)
+    
+    # Apply custom rules if provided
+    if rules:
+        for rule_name, value in rules.items():
+            optimizer.set_rule(rule_name, value)
+    
+    print(f"Optimizing MIDI files from {input_dir} to {output_dir}...")
+    print("=" * 60)
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    results = optimizer.optimize_directory(input_dir, output_dir)
+    stats = optimizer.get_stats()
+    
+    successful = sum(1 for r in results if 'error' not in r)
+    errors = sum(1 for r in results if 'error' in r)
+    
+    print(f"\nResults:")
+    print(f"  Files processed: {successful}")
+    print(f"  Errors: {errors}")
+    print(f"  Events removed: {stats['events_removed']}")
+    print(f"  Notes removed: {stats['notes_removed']}")
+    
+    # Calculate average reduction
+    total_original = sum(r.get('original_events', 0) for r in results if 'error' not in r)
+    total_optimized = sum(r.get('optimized_events', 0) for r in results if 'error' not in r)
+    if total_original > 0:
+        reduction = ((total_original - total_optimized) / total_original) * 100
+        print(f"  Average reduction: {reduction:.1f}%")
+    
+    print("\n" + "=" * 60)
+    return results
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Korg MIDI Optimizer - Optimize MIDI files using DNA-based rules'
+        description='Korg MIDI Optimizer - Optimize MIDI files for Korg keyboards',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py analyze ./my_midi_files
+  python main.py optimize ./input ./output
+  python main.py batch ./input ./output --detailed
+  python main.py optimize ./input ./output --no-duplicates --no-cc-cleanup
+        """
     )
     
-    parser.add_argument(
-        'input',
-        help='Input MIDI file or directory'
-    )
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
     
-    parser.add_argument(
-        '-o', '--output',
-        required=True,
-        help='Output directory for optimized files'
-    )
+    # Analyze command
+    analyze_parser = subparsers.add_parser('analyze', help='Analyze MIDI files')
+    analyze_parser.add_argument('directory', help='Directory containing MIDI files')
+    analyze_parser.add_argument('--detailed', '-d', action='store_true', 
+                               help='Show detailed instrument information')
     
-    parser.add_argument(
-        '--gold-dna',
-        help='Directory containing Gold DNA MIDI files for analysis'
-    )
+    # Optimize command
+    optimize_parser = subparsers.add_parser('optimize', help='Optimize MIDI files')
+    optimize_parser.add_argument('input_dir', help='Input directory with MIDI files')
+    optimize_parser.add_argument('output_dir', help='Output directory for optimized files')
+    optimize_parser.add_argument('--no-duplicates', action='store_true',
+                                help='Disable duplicate note removal')
+    optimize_parser.add_argument('--no-cc-cleanup', action='store_true',
+                                help='Disable control change cleanup')
+    optimize_parser.add_argument('--no-zero-vel', action='store_true',
+                                help='Disable zero-velocity note removal')
     
-    parser.add_argument(
-        '--factory-styles',
-        help='Directory containing Factory Style MIDI files for analysis'
-    )
-    
-    parser.add_argument(
-        '--analyze-only',
-        action='store_true',
-        help='Only analyze files, do not optimize'
-    )
-    
-    parser.add_argument(
-        '--report',
-        action='store_true',
-        help='Generate detailed optimization report'
-    )
-    
-    parser.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        help='Verbose output'
-    )
+    # Batch command (analyze + optimize)
+    batch_parser = subparsers.add_parser('batch', help='Full batch processing')
+    batch_parser.add_argument('input_dir', help='Input directory with MIDI files')
+    batch_parser.add_argument('output_dir', help='Output directory for optimized files')
+    batch_parser.add_argument('--detailed', '-d', action='store_true',
+                             help='Show detailed analysis')
     
     args = parser.parse_args()
     
-    # Create DNA profile if source directories provided
-    dna_profile = {}
-    if args.gold_dna and args.factory_styles:
-        print("Creating DNA profile from Gold DNA and Factory Styles...")
-        dna_profile = create_dna_profile_from_samples(args.gold_dna, args.factory_styles)
+    if args.command == 'analyze':
+        analyze_directory(args.directory, args.detailed)
         
-        if args.verbose:
-            print(f"\nDNA Profile Summary:")
-            print(f"  Gold DNA samples: {dna_profile['gold_dna_profile'].get('sample_count', 0)}")
-            print(f"  Factory Style samples: {dna_profile['factory_style_profile'].get('sample_count', 0)}")
-            
-            if dna_profile['gold_dna_profile'].get('tempo_distribution'):
-                tempo = dna_profile['gold_dna_profile']['tempo_distribution']
-                print(f"  Average tempo: {tempo.get('avg', 120):.1f} BPM")
-    
-    # Initialize components
-    analyzer = MIDIDNAAnalyzer()
-    optimizer = KorgMIDIOptimizer(dna_profile=dna_profile)
-    
-    # Check if input is file or directory
-    if os.path.isfile(args.input):
-        # Single file mode
-        if args.analyze_only:
-            print(f"Analyzing: {args.input}")
-            result = analyzer.analyze_file(args.input)
-            
-            if args.report:
-                print(json.dumps(result, indent=2, default=str))
-            else:
-                print(f"  Type: {result.get('type')}")
-                print(f"  Tracks: {result.get('num_tracks')}")
-                print(f"  Tempo: {result.get('global_features', {}).get('tempo_bpm', 'N/A')} BPM")
-        else:
-            # Optimize single file
-            output_file = os.path.join(args.output, os.path.basename(args.input))
-            os.makedirs(args.output, exist_ok=True)
-            
-            print(f"Optimizing: {args.input}")
-            result = optimizer.optimize_file(args.input, output_file)
-            
-            if result['success']:
-                print(f"  Output: {output_file}")
-                
-                if result.get('improvements'):
-                    print(f"  Improvements:")
-                    for key, value in result['improvements'].items():
-                        print(f"    - {key}: {value}")
-            else:
-                print(f"  Error: {result.get('error')}")
-                sys.exit(1)
-    
-    elif os.path.isdir(args.input):
-        # Directory mode
-        if args.analyze_only:
-            print(f"Analyzing directory: {args.input}")
-            results = analyzer.analyze_directory(args.input)
-            
-            print(f"\nAnalysis Results:")
-            print(f"  Files analyzed: {results['files_analyzed']}")
-            print(f"  Errors: {len(results['errors'])}")
-            
-            if results['dna_samples']:
-                profile = analyzer.create_style_profile(results['dna_samples'])
-                print(f"\nStyle Profile:")
-                print(f"  Sample count: {profile.get('sample_count', 0)}")
-                if profile.get('tempo_distribution'):
-                    tempo = profile['tempo_distribution']
-                    print(f"  Tempo range: {tempo.get('min', 0):.1f} - {tempo.get('max', 0):.1f} BPM")
-                    print(f"  Average tempo: {tempo.get('avg', 120):.1f} BPM")
-            
-            if args.report:
-                report_file = os.path.join(args.output, 'analysis_report.json')
-                os.makedirs(args.output, exist_ok=True)
-                with open(report_file, 'w') as f:
-                    json.dump(results, f, indent=2, default=str)
-                print(f"\nReport saved to: {report_file}")
-        else:
-            # Optimize directory
-            print(f"Optimizing directory: {args.input}")
-            print(f"Output directory: {args.output}")
-            
-            results = optimizer.optimize_directory(args.input, args.output)
-            
-            print(f"\nOptimization Results:")
-            print(f"  Files processed: {results['files_processed']}")
-            print(f"  Successful: {results['successful']}")
-            print(f"  Failed: {results['failed']}")
-            
-            if args.report:
-                report_file = os.path.join(args.output, 'optimization_report.json')
-                with open(report_file, 'w') as f:
-                    json.dump(results, f, indent=2, default=str)
-                print(f"\nReport saved to: {report_file}")
-    
+    elif args.command == 'optimize':
+        rules = {}
+        if args.no_duplicates:
+            rules['remove_duplicate_notes'] = False
+        if args.no_cc_cleanup:
+            rules['clean_control_changes'] = False
+        if args.no_zero_vel:
+            rules['remove_zero_velocity_notes'] = False
+        
+        optimize_directory(args.input_dir, args.output_dir, rules)
+        
+    elif args.command == 'batch':
+        print("Step 1: Analysis")
+        print("=" * 60)
+        analyze_directory(args.input_dir, args.detailed)
+        
+        print("\nStep 2: Optimization")
+        print("=" * 60)
+        optimize_directory(args.input_dir, args.output_dir)
+        
     else:
-        print(f"Error: Input path does not exist: {args.input}")
+        parser.print_help()
+        print("\nPlease specify a command: analyze, optimize, or batch")
         sys.exit(1)
-    
-    print("\nDone!")
 
 
 if __name__ == '__main__':
