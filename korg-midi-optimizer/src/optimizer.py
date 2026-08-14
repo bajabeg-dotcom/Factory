@@ -1,277 +1,270 @@
 """
-Korg MIDI Optimizer
-
-Optimizes MIDI files based on Factory Styles and Gold DNA patterns.
-Rules:
-1. Maintain Korg-compatible structure (Type 0 or Type 1 MIDI)
-2. Preserve style variation markers (Intro, Var1-4, Fill, Break, End)
-3. Optimize note density based on Gold DNA averages
-4. Standardize tempo and time signatures
-5. Clean up redundant control changes
-6. Ensure proper channel assignments
-7. Remove non-essential meta events
+Korg MIDI Optimizer - Main optimizer module for processing MIDI files.
+Applies DNA-based rules to optimize MIDI files for Korg keyboards.
 """
 
 import mido
-from typing import Dict, List, Any, Optional
 import os
-import shutil
+from typing import Dict, List, Any, Optional, Set
+from pathlib import Path
+
+# Import DNAAnalyzer directly (for standalone usage)
+try:
+    from .dna_analyzer import DNAAnalyzer
+except ImportError:
+    from dna_analyzer import DNAAnalyzer
 
 
-class KorgMIDIOptimizer:
-    """Optimizes MIDI files for Korg keyboards using DNA-based rules."""
+class MIDIOptimizer:
+    """Optimizes MIDI files based on Factory Styles and Gold DNA patterns."""
     
-    # Korg-specific constants
-    MAX_TRACKS = 16  # Korg limit
-    TICKS_PER_BEAT = 192  # Standard for Korg styles
-    MAX_VELOCITY = 127
-    MIN_VELOCITY = 1
-    
-    # Rule weights for optimization
-    RULES = {
-        'normalize_tempo': True,
+    # Rules for optimization
+    OPTIMIZATION_RULES = {
+        'remove_duplicate_notes': True,
         'clean_control_changes': True,
-        'optimize_note_density': True,
-        'standardize_tracks': True,
-        'remove_redundant_events': True,
+        'normalize_velocities': True,
+        'remove_zero_velocity_notes': True,
+        'merge_short_tracks': True,
+        'standardize_channel_assignment': True,
         'preserve_style_markers': True,
-        'channel_optimization': True
+        'quantize_rhythm': False,  # Optional, can be enabled
     }
     
-    def __init__(self, dna_profile: Optional[Dict] = None):
-        """Initialize optimizer with optional DNA profile from Gold/Factory styles."""
-        self.dna_profile = dna_profile or {}
-        self.optimization_stats = {
-            'files_processed': 0,
-            'rules_applied': [],
-            'changes_made': []
-        }
+    # Control changes to preserve (Korg-specific)
+    ESSENTIAL_CONTROL_CHANGES = {
+        1,   # Modulation
+        7,   # Volume
+        10,  # Pan
+        11,  # Expression
+        64,  # Sustain pedal
+        91,  # Reverb
+        93,  # Chorus
+    }
     
-    def optimize_file(self, input_path: str, output_path: str) -> Dict[str, Any]:
+    def __init__(self, dna_analyzer: Optional[DNAAnalyzer] = None):
+        self.dna_analyzer = dna_analyzer or DNAAnalyzer()
+        self.rules = self.OPTIMIZATION_RULES.copy()
+        self.stats = {
+            'files_processed': 0,
+            'notes_removed': 0,
+            'events_removed': 0,
+            'tracks_merged': 0,
+            'errors': 0
+        }
+        
+    def set_rule(self, rule_name: str, value: bool):
+        """Enable or disable an optimization rule."""
+        if rule_name in self.rules:
+            self.rules[rule_name] = value
+        else:
+            raise ValueError(f"Unknown rule: {rule_name}")
+    
+    def optimize_file(self, input_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         """Optimize a single MIDI file."""
         try:
             mid = mido.MidiFile(input_path)
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            self.stats['errors'] += 1
+            return {'error': str(e), 'input_path': input_path}
         
-        original_stats = self._get_file_stats(mid)
-        
-        # Apply optimization rules
-        if self.RULES['remove_redundant_events']:
-            self._remove_redundant_events(mid)
-        
-        if self.RULES['clean_control_changes']:
-            self._clean_control_changes(mid)
-        
-        if self.RULES['standardize_tracks']:
-            self._standardize_tracks(mid)
-        
-        if self.RULES['channel_optimization']:
-            self._optimize_channels(mid)
-        
-        # Save optimized file
-        mid.save(output_path)
-        
-        new_stats = self._get_file_stats(mid)
-        
-        self.optimization_stats['files_processed'] += 1
-        
-        return {
-            'success': True,
-            'input_file': input_path,
-            'output_file': output_path,
-            'original_stats': original_stats,
-            'optimized_stats': new_stats,
-            'improvements': self._calculate_improvements(original_stats, new_stats)
-        }
-    
-    def _get_file_stats(self, mid: mido.MidiFile) -> Dict[str, Any]:
-        """Get statistics about a MIDI file."""
-        stats = {
-            'type': mid.type,
-            'ticks_per_beat': mid.ticks_per_beat,
-            'num_tracks': len(mid.tracks),
-            'total_messages': 0,
-            'note_count': 0,
-            'control_change_count': 0,
-            'tempo_changes': 0
+        optimized_mid = mido.MidiFile(ticks_per_beat=mid.ticks_per_beat)
+        optimization_report = {
+            'input_path': input_path,
+            'output_path': output_path,
+            'original_tracks': len(mid.tracks),
+            'optimized_tracks': 0,
+            'original_events': sum(len(track) for track in mid.tracks),
+            'optimized_events': 0,
+            'changes': []
         }
         
-        for track in mid.tracks:
-            for msg in track:
-                stats['total_messages'] += 1
-                if msg.type == 'note_on' and msg.velocity > 0:
-                    stats['note_count'] += 1
-                elif msg.type == 'control_change':
-                    stats['control_change_count'] += 1
-                elif msg.type == 'set_tempo':
-                    stats['tempo_changes'] += 1
+        # Analyze the file first to understand its structure
+        dna = self.dna_analyzer.analyze_file(input_path)
         
-        return stats
-    
-    def _remove_redundant_events(self, mid: mido.MidiFile):
-        """Remove redundant MIDI events."""
-        for track in mid.tracks:
-            # Remove duplicate tempo changes
-            tempo_seen = False
-            new_track = []
-            for msg in track:
-                if msg.type == 'set_tempo':
-                    if not tempo_seen:
-                        new_track.append(msg)
-                        tempo_seen = True
-                elif msg.type == 'end_of_track':
-                    continue  # Will be added automatically
-                else:
-                    new_track.append(msg)
+        # Process each track
+        preserved_track_names = set()
+        if self.rules['preserve_style_markers']:
+            for marker in dna.get('style_markers', []):
+                preserved_track_names.add(marker['track'])
+        
+        for track_idx, track in enumerate(mid.tracks):
+            optimized_track = self._optimize_track(
+                track, 
+                track_idx,
+                preserved_track_names
+            )
+            optimized_mid.tracks.append(optimized_track)
             
-            # Clear and rebuild track
-            track.clear()
-            for msg in new_track:
-                track.append(msg)
+            original_count = len(track)
+            optimized_count = len(optimized_track)
+            if optimized_count < original_count:
+                optimization_report['changes'].append({
+                    'track': track_idx,
+                    'events_removed': original_count - optimized_count,
+                    'reason': 'optimization'
+                })
+        
+        optimization_report['optimized_tracks'] = len(optimized_mid.tracks)
+        optimization_report['optimized_events'] = sum(len(t) for t in optimized_mid.tracks)
+        
+        # Save if output path provided
+        if output_path:
+            os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
+            optimized_mid.save(output_path)
+            optimization_report['saved'] = True
+        
+        self.stats['files_processed'] += 1
+        total_events_removed = optimization_report['original_events'] - optimization_report['optimized_events']
+        self.stats['events_removed'] += total_events_removed
+        
+        return optimization_report
     
-    def _clean_control_changes(self, mid: mido.MidiFile):
-        """Clean up redundant control changes."""
-        for track in mid.tracks:
-            cc_history = {}  # Track last CC value per controller per channel
+    def _optimize_track(self, track: mido.MidiTrack, track_idx: int, 
+                       preserved_tracks: Set[int]) -> mido.MidiTrack:
+        """Optimize a single MIDI track."""
+        optimized = mido.MidiTrack()
+        
+        seen_notes = {}  # Track duplicate notes: (note, channel) -> tick
+        last_control_values = {}  # Track last CC values per control number
+        
+        tick_position = 0
+        for msg in track:
+            tick_position += msg.time
             
-            new_track = []
-            for msg in track:
-                if msg.type == 'control_change':
-                    key = (msg.channel, msg.control)
-                    if key not in cc_history or cc_history[key] != msg.value:
-                        cc_history[key] = msg.value
-                        new_track.append(msg)
-                else:
-                    new_track.append(msg)
+            # Always include timing messages
+            if msg.type == 'set_tempo':
+                optimized.append(msg)
+                continue
+                
+            # Preserve track names (especially style markers)
+            if msg.type == 'track_name':
+                optimized.append(msg)
+                continue
             
-            track.clear()
-            for msg in new_track:
-                track.append(msg)
-    
-    def _standardize_tracks(self, mid: mido.MidiFile):
-        """Standardize track structure for Korg compatibility."""
-        # Ensure ticks per beat is standard
-        if mid.ticks_per_beat != self.TICKS_PER_BEAT:
-            # Note: mido doesn't support changing ticks_per_beat directly
-            # This would require rescaling all timing values
-            pass
-        
-        # Limit number of tracks
-        if len(mid.tracks) > self.MAX_TRACKS:
-            # Merge excess tracks into track 0
-            merged_track = mid.tracks[0][:]
-            for track in mid.tracks[1:self.MAX_TRACKS]:
-                merged_track.extend(track)
+            # Preserve instrument changes
+            if msg.type == 'program_change' or msg.type == 'set_instrument':
+                optimized.append(msg)
+                continue
             
-            mid.tracks = [merged_track]
-    
-    def _optimize_channels(self, mid: mido.MidiFile):
-        """Optimize channel assignments for Korg keyboards."""
-        # Channel 9 (10th channel) is reserved for drums in GM
-        # Ensure drum tracks are on channel 9
-        
-        for track in mid.tracks:
-            track_name = getattr(track, 'name', '').upper()
-            if 'DRUM' in track_name or 'PERC' in track_name:
-                # Move drum notes to channel 9
-                for msg in track:
-                    if hasattr(msg, 'channel') and msg.type in ('note_on', 'note_off'):
-                        msg.channel = 9
-    
-    def _calculate_improvements(self, original: Dict, optimized: Dict) -> Dict[str, Any]:
-        """Calculate improvements made by optimization."""
-        improvements = {}
-        
-        if optimized['total_messages'] < original['total_messages']:
-            reduction = original['total_messages'] - optimized['total_messages']
-            improvements['message_reduction'] = {
-                'count': reduction,
-                'percentage': (reduction / original['total_messages']) * 100
-            }
-        
-        if optimized['control_change_count'] < original['control_change_count']:
-            improvements['cc_cleanup'] = {
-                'removed': original['control_change_count'] - optimized['control_change_count']
-            }
-        
-        return improvements
-    
-    def optimize_directory(self, input_dir: str, output_dir: str) -> Dict[str, Any]:
-        """Optimize all MIDI files in a directory."""
-        results = {
-            'input_directory': input_dir,
-            'output_directory': output_dir,
-            'files_processed': 0,
-            'successful': 0,
-            'failed': 0,
-            'details': []
-        }
-        
-        os.makedirs(output_dir, exist_ok=True)
-        
-        for root, dirs, files in os.walk(input_dir):
-            for filename in files:
-                if filename.lower().endswith(('.mid', '.MID')):
-                    input_path = os.path.join(root, filename)
+            # Handle note events
+            if msg.type == 'note_on':
+                if msg.velocity == 0:
+                    # Treat as note_off
+                    if self.rules['remove_zero_velocity_notes']:
+                        self.stats['notes_removed'] += 1
+                        continue
+                    msg = mido.Message('note_off', note=msg.note, velocity=0, 
+                                      time=msg.time, channel=getattr(msg, 'channel', 0))
+                
+                if self.rules['remove_duplicate_notes']:
+                    note_key = (msg.note, getattr(msg, 'channel', 0))
+                    if note_key in seen_notes:
+                        # Duplicate note, skip it
+                        self.stats['notes_removed'] += 1
+                        continue
+                    seen_notes[note_key] = tick_position
                     
-                    # Create relative path in output directory
-                    rel_path = os.path.relpath(root, input_dir)
-                    output_subdir = os.path.join(output_dir, rel_path)
-                    os.makedirs(output_subdir, exist_ok=True)
-                    
-                    output_path = os.path.join(output_subdir, filename)
-                    
-                    result = self.optimize_file(input_path, output_path)
-                    results['details'].append(result)
-                    results['files_processed'] += 1
-                    
-                    if result.get('success'):
-                        results['successful'] += 1
+                optimized.append(msg)
+                
+            elif msg.type == 'note_off':
+                if self.rules['remove_duplicate_notes']:
+                    note_key = (msg.note, getattr(msg, 'channel', 0))
+                    if note_key not in seen_notes:
+                        # Note off without corresponding note on, keep it anyway for safety
+                        pass
                     else:
-                        results['failed'] += 1
+                        del seen_notes[note_key]
+                optimized.append(msg)
+                
+            # Handle control changes
+            elif msg.type == 'control_change':
+                if self.rules['clean_control_changes']:
+                    control_num = msg.control
+                    value = msg.value
+                    
+                    # Skip non-essential control changes that haven't changed
+                    if control_num not in self.ESSENTIAL_CONTROL_CHANGES:
+                        key = (control_num, getattr(msg, 'channel', 0))
+                        if key in last_control_values and last_control_values[key] == value:
+                            self.stats['events_removed'] += 1
+                            continue
+                        last_control_values[key] = value
+                    
+                    # Skip zero-value control changes for non-essential controls
+                    if value == 0 and control_num not in self.ESSENTIAL_CONTROL_CHANGES:
+                        self.stats['events_removed'] += 1
+                        continue
+                
+                optimized.append(msg)
+                
+            # Handle pitch wheel
+            elif msg.type == 'pitchwheel':
+                optimized.append(msg)
+                
+            # Keep all other message types by default
+            else:
+                optimized.append(msg)
         
+        return optimized
+    
+    def optimize_directory(self, input_dir: str, output_dir: str, 
+                          pattern: str = "*.mid") -> List[Dict[str, Any]]:
+        """Optimize all MIDI files in a directory."""
+        results = []
+        input_path = Path(input_dir)
+        
+        for midi_file in input_path.rglob(pattern):
+            relative_path = midi_file.relative_to(input_path)
+            output_path = Path(output_dir) / relative_path
+            
+            result = self.optimize_file(str(midi_file), str(output_path))
+            results.append(result)
+            
         return results
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get optimization statistics."""
+        return self.stats.copy()
+    
+    def reset_stats(self):
+        """Reset optimization statistics."""
+        self.stats = {
+            'files_processed': 0,
+            'notes_removed': 0,
+            'events_removed': 0,
+            'tracks_merged': 0,
+            'errors': 0
+        }
 
 
-def create_dna_profile_from_samples(gold_dna_dir: str, factory_styles_dir: str) -> Dict[str, Any]:
-    """Create a DNA profile from Gold DNA and Factory Style samples."""
-    from src.dna_analyzer import MIDIDNAAnalyzer
+def main():
+    """Test the MIDI optimizer."""
+    analyzer = DNAAnalyzer()
+    optimizer = MIDIOptimizer(dna_analyzer=analyzer)
     
-    analyzer = MIDIDNAAnalyzer()
+    # Test on Gold DNA files
+    gold_dir = "/workspace/korg-midi-optimizer/data/gold/Gold DNA"
+    output_dir = "/workspace/korg-midi-optimizer/output/gold_optimized"
     
-    # Analyze Gold DNA
-    gold_results = analyzer.analyze_directory(gold_dna_dir)
+    print(f"Optimizing Gold DNA files from {gold_dir}...")
+    results = optimizer.optimize_directory(gold_dir, output_dir)
     
-    # Analyze Factory Styles
-    factory_results = analyzer.analyze_directory(factory_styles_dir)
+    print(f"\nOptimized {len(results)} files")
+    stats = optimizer.get_stats()
+    print(f"Files processed: {stats['files_processed']}")
+    print(f"Events removed: {stats['events_removed']}")
+    print(f"Notes removed: {stats['notes_removed']}")
+    print(f"Errors: {stats['errors']}")
     
-    # Create composite profile
-    profile = {
-        'gold_dna_profile': analyzer.create_style_profile(gold_results['dna_samples']),
-        'factory_style_profile': analyzer.create_style_profile(factory_results['dna_samples']),
-        'combined_rules': generate_optimization_rules(gold_results, factory_results)
-    }
+    if results and not results[0].get('error'):
+        sample = results[0]
+        print(f"\nSample optimization report:")
+        print(f"  Original events: {sample['original_events']}")
+        print(f"  Optimized events: {sample['optimized_events']}")
+        print(f"  Reduction: {sample['original_events'] - sample['optimized_events']} events")
     
-    return profile
+    return results
 
 
-def generate_optimization_rules(gold_data: Dict, factory_data: Dict) -> List[Dict]:
-    """Generate optimization rules based on DNA analysis."""
-    rules = []
-    
-    # Extract common characteristics
-    if gold_data['dna_samples']:
-        avg_tempo = sum(
-            s['global_features'].get('tempo_bpm', 120) 
-            for s in gold_data['dna_samples']
-        ) / len(gold_data['dna_samples'])
-        
-        rules.append({
-            'name': 'target_tempo',
-            'value': avg_tempo,
-            'tolerance': 10,
-            'priority': 'medium'
-        })
-    
-    return rules
+if __name__ == "__main__":
+    main()

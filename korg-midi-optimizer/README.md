@@ -1,111 +1,127 @@
 # Korg MIDI Optimizer
 
-Aplikacija za optimizaciju MIDI fajlova na osnovu Factory Styles i Gold DNA pattern-a.
+Aplikacija za optimizaciju MIDI fajlova za Korg keyboard-e koristeći DNA pattern-e iz Factory Styles i Gold style-ova.
+
+## Funkcionalnosti
+
+- **DNA Analiza**: Ekstrahuje muzičke pattern-e, instrumente, ritam strukture i style markere iz MIDI fajlova
+- **Optimizacija**: Primenuje pravila za čišćenje i optimizaciju MIDI fajlova:
+  - Uklanjanje duplih nota
+  - Čišćenje kontrolnih promena (Control Changes)
+  - Uklanjanje nota sa nulom velocity
+  - Očuvanje style markera (INTRO, VAR, FILL, BREAK, ENDING)
+  - Očuvanje esencijalnih CC-eva (Volume, Pan, Modulation, Sustain, Reverb, Chorus)
+- **Batch Processing**: Obrada celih direktorijuma MIDI fajlova
+- **Detaljni Izveštaji**: Statistika i analize obrađenih fajlova
+
+## Instalacija
+
+```bash
+cd korg-midi-optimizer
+pip install mido pytest
+```
+
+## Upotreba
+
+### Analiza MIDI fajlova
+
+```bash
+python main.py analyze ./data/gold/Gold\ DNA
+```
+
+### Optimizacija MIDI fajlova
+
+```bash
+python main.py optimize ./input ./output
+```
+
+### Batch obrada (analiza + optimizacija)
+
+```bash
+python main.py batch ./data/gold/Gold\ DNA ./output --detailed
+```
+
+### Opcije za optimizaciju
+
+```bash
+# Onemogući uklanjanje duplih nota
+python main.py optimize ./input ./output --no-duplicates
+
+# Onemogući čišćenje kontrolnih promena
+python main.py optimize ./input ./output --no-cc-cleanup
+
+# Zadrži note sa nulom velocity
+python main.py optimize ./input ./output --no-zero-vel
+```
+
+## Pokretanje testova
+
+```bash
+cd korg-midi-optimizer
+python -m pytest tests/ -v
+```
 
 ## Struktura Projekta
 
 ```
 korg-midi-optimizer/
 ├── src/
-│   ├── __init__.py
-│   ├── dna_analyzer.py      # Analiza MIDI DNA pattern-a
-│   └── optimizer.py         # Optimizacija MIDI fajlova
+│   ├── __init__.py          # Package initialization
+│   ├── dna_analyzer.py      # DNA analiza MIDI fajlova
+│   └── optimizer.py         # MIDI optimizer
 ├── tests/
-│   └── test_optimizer.py    # Test suite (13 testova)
+│   ├── test_dna_analyzer.py # Testovi za DNA analyzer
+│   └── test_optimizer.py    # Testovi za optimizer
 ├── data/
-│   ├── gold_dna/            # 182 Gold DNA MIDI fajla
-│   └── factory_styles/      # 3211 Factory Style MIDI fajla
-├── output/                  # Output direktorijum
+│   ├── factory/             # Factory Style MIDI fajlovi
+│   └── gold/                # Gold DNA MIDI fajlovi
+├── output/                  # Optimizovani MIDI fajlovi
 ├── main.py                  # CLI aplikacija
 └── README.md                # Dokumentacija
 ```
 
 ## Pravila Optimizacije
 
-1. **Uklanjanje redundantnih eventa** - Duplicirani tempo change-ovi se uklanjaju
-2. **Čišćenje control change-ova** - Uzastopni isti CC-ovi se konsoliduju
-3. **Standardizacija track-ova** - Održavanje Korg-kompatibilne strukture
-4. **Optimizacija kanala** - Drum track-ovi na channel 9
-5. **Očuvanje style markera** - Intro, Var1-4, Fill, Break, End sekcije
+### Podrazumevana pravila (aktivna):
+- `remove_duplicate_notes`: Uklanja duplicate note na istom tick-u
+- `clean_control_changes`: Čisti redundantne kontrolne promene
+- `remove_zero_velocity_notes`: Uklanja note_on poruke sa velocity=0
+- `preserve_style_markers`: Čuva style markere u track imenima
 
-## Upotreba
+### Esencijalni Control Change-evi (uvek očuvani):
+- CC 1: Modulation
+- CC 7: Volume
+- CC 10: Pan
+- CC 11: Expression
+- CC 64: Sustain Pedal
+- CC 91: Reverb
+- CC 93: Chorus
 
-### Analiza direktorijuma
+### Style Markeri (prepoznati):
+- INTRO1, INTRO2, INTRO3
+- VAR1, VAR2, VAR3, VAR4
+- FILL1, FILL2, FILL3, FILL4
+- BREAK
+- END1, END2, ENDING1, ENDING2
 
-```bash
-python main.py data/gold_dna -o output/analyzed --analyze-only
+## API Upotreba
+
+```python
+from src.dna_analyzer import DNAAnalyzer
+from src.optimizer import MIDIOptimizer
+
+# Analiza
+analyzer = DNAAnalyzer()
+dna = analyzer.analyze_file('path/to/file.mid')
+print(f"Style markers: {dna['style_markers']}")
+print(f"Instruments: {dna['instruments']}")
+
+# Optimizacija
+optimizer = MIDIOptimizer(dna_analyzer=analyzer)
+result = optimizer.optimize_file('input.mid', 'output.mid')
+print(f"Events removed: {result['original_events'] - result['optimized_events']}")
 ```
 
-### Optimizacija pojedinačnog fajla
+## Autor
 
-```bash
-python main.py "input.mid" -o output/optimized \
-    --gold-dna data/gold_dna \
-    --factory-styles data/factory_styles \
-    -v
-```
-
-### Optimizacija celog direktorijuma
-
-```bash
-python main.py data/gold_dna -o output/optimized \
-    --gold-dna data/gold_dna \
-    --factory-styles data/factory_styles \
-    --report
-```
-
-### Samo analiza sa detaljnim report-om
-
-```bash
-python main.py data/gold_dna -o output/report \
-    --analyze-only --report
-```
-
-## Rezultati Analize
-
-### Gold DNA (182 fajla)
-- Tempo opseg: 46 - 215 BPM
-- Prosečan tempo: 115.3 BPM
-
-### Factory Styles (3211 fajla)
-- Tempo opseg: 57 - 196 BPM  
-- Prosečan tempo: 112.7 BPM
-
-## Testiranje
-
-Svi testovi prolaze:
-
-```bash
-cd korg-midi-optimizer
-python -m pytest tests/test_optimizer.py -v
-```
-
-Test coverage:
-- ✅ DNA Analyzer funkcionalnost
-- ✅ Optimizer pravila
-- ✅ File processing pipeline
-- ✅ Edge cases i error handling
-- ✅ Integration testi
-
-## Primer Optimizacije
-
-```
-Optimizing: A JA VOLIM ONO T-KORIJENI UZIVO.MID
-  Output: output/optimized/A JA VOLIM ONO T-KORIJENI UZIVO.MID
-  Improvements:
-    - message_reduction: 79 messages (0.24%)
-    - cc_cleanup: 78 removed
-```
-
-## Instalacija Zavisnosti
-
-```bash
-pip install mido pytest
-```
-
-## Napomene
-
-- Aplikacija koristi DNA profile iz Gold i Factory Styles kolekcija
-- Optimizacija je neinvazivna - čuva muzički sadržaj
-- Output fajlovi su Korg keyboard kompatibilni
-- Support za Type 0 i Type 1 MIDI fajlove
+Kreirano za optimizaciju MIDI style-ova za Korg keyboard-e.
